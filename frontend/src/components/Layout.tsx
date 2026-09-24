@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from "react-router";
+import { NavLink, Outlet, useNavigate } from "react-router";
+import { useAuth } from "../context/AuthContext";
 
 const liens = [
   { to: "/", label: "Accueil", end: true },
@@ -7,6 +8,14 @@ const liens = [
 ];
 
 export function Layout() {
+  const { utilisateur, deconnexion } = useAuth();
+  const navigate = useNavigate();
+
+  async function onDeconnexion() {
+    await deconnexion();
+    navigate("/connexion", { replace: true });
+  }
+
   return (
     <div className="min-h-screen bg-base-200">
       <header className="navbar bg-base-100 shadow-(--shadow-raised) max-w-app mx-auto">
@@ -27,6 +36,12 @@ export function Layout() {
             </NavLink>
           ))}
         </nav>
+        <div className="flex items-center gap-2 px-2">
+          {utilisateur && <span className="text-sm text-base-content/70">{utilisateur.nom}</span>}
+          <button type="button" className="btn btn-sm btn-ghost" onClick={onDeconnexion}>
+            Déconnexion
+          </button>
+        </div>
       </header>
       <main className="max-w-app mx-auto p-6">
         <Outlet />
