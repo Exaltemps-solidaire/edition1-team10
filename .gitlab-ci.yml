@@ -1,0 +1,132 @@
+# .gitlab-ci.yml — pipeline de l'app (copié de core-platform/app-builder-guidances/templates/).
+#
+# Exécution locale via gitlab-ci-local :
+#   gitlab-ci-local --force-shell-executor                              # start
+#   gitlab-ci-local --force-shell-executor --variable ACTION=stop       # stop
+#   gitlab-ci-local --force-shell-executor --variable ACTION=purge      # purge
+#
+# Pas de service worker : rien dans le backlog actuel ne dépasse le seuil de
+# 350 ms qui imposerait un traitement asynchrone (CCOE-RULES §4.2). À ajouter
+# (job build-worker / image-worker + service worker du compose) dès qu'un
+# besoin réel apparaît.
+
+stages:
+  - app-provision
+  - app-build
+  - app-image
+  - app-deploy
+  - app-verify
+  - app-stop
+  - app-purge
+
+variables:
+  APP: sauvegarde-conformite
+  TAG: dev
+  REGISTRY: localhost:5000
+  PUBLIC_BUCKET: "0"
+  ACTION: start
+
+.on-start:
+  rules:
+    - if: $ACTION == "start"
+
+.bun-build:
+  extends: .on-start
+  stage: app-build
+  script:
+    - cd "$SERVICE"
+    - bun install --production
+
+.podman-image:
+  extends: .on-start
+  stage: app-image
+  script:
+    - podman build -t "$REGISTRY/$APP/$SERVICE:$TAG" "$SERVICE/"
+    - podman push   "$REGISTRY/$APP/$SERVICE:$TAG"
+
+# ============================================================================
+# ACTION=start
+# ============================================================================
+
+provision:
+  extends: .on-start
+  stage: app-provision
+  script:
+    - APP="$APP" PUBLIC_BUCKET="$PUBLIC_BUCKET" ./bootstrap.sh
+
+build-frontend:
+  extends: .on-start
+  stage: app-build
+  script:
+    - cd frontend
+    - bun install
+    - bun run build
+
+build-api:
+  extends: .bun-build
+  variables: { SERVICE: api }
+
+image-frontend:
+  extends: .podman-image
+  variables: { SERVICE: frontend }
+
+image-api:
+  extends: .podman-image
+  variables: { SERVICE: api }
+
+deploy:
+  extends: .on-start
+  stage: app-deploy
+  script:
+    - echo "[deploy] podman compose -p $APP up -d --force-recreate"
+    - podman compose -p "$APP" up -d --force-recreate
+
+verify:
+  extends: .on-start
+  stage: app-verify
+  script:
+    - |
+      set -e
+      echo "[verify] smoke test app"
+      ok=0
+      for _ in $(seq 1 30); do
+        if curl -sf http://localhost:8081/health >/dev/null && curl -sf http://localhost:8080/ >/dev/null; then
+          ok=1; break
+        fi
+        sleep 1
+      done
+      if [ "$ok" != "1" ]; then
+        echo "[verify] FAIL — services not reachable after 30s"
+        exit 1
+      fi
+      echo "  OK  api      http://localhost:8081/health"
+      echo "  OK  frontend http://localhost:8080"
+
+# ============================================================================
+# ACTION=stop
+# ============================================================================
+
+stop:
+  stage: app-stop
+  rules:
+    - if: $ACTION == "stop"
+  script:
+    - echo "[stop] podman compose -p $APP down"
+    - podman compose -p "$APP" down
+    - echo "[stop] the containers are down — the MinIO bucket, the Vault secrets and the app volumes are preserved."
+
+# ============================================================================
+# ACTION=purge
+# ============================================================================
+
+purge:
+  stage: app-purge
+  rules:
+    - if: $ACTION == "purge"
+  script:
+    - echo "[purge] podman compose -p $APP down --volumes"
+    - podman compose -p "$APP" down --volumes
+    - echo "[purge] removing the Vault secrets of $APP"
+    - vault kv metadata delete "secret/$APP/postgres" 2>/dev/null || true
+    - vault kv metadata delete "secret/$APP/minio"    2>/dev/null || true
+    - echo "[purge] done — the MinIO bucket + the Postgres DB are kept (see the header for an explicit rm)"

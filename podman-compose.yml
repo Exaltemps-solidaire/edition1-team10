@@ -1,0 +1,52 @@
+# podman-compose.yml — copié de core-platform/app-builder-guidances/templates/.
+#
+# Rejoint le réseau partagé `core-network` fourni par core-platform/.
+#
+# Contrainte machine (/srv/team10/CLAUDE.md §1) : seuls les ports 8080
+# (frontend) et 8081 (api) sont routés par le proxy d'entrée — on ne réserve
+# pas de bloc de 10 ports comme le suggèrent les guidelines génériques.
+#
+# Pas de service worker : voir la justification dans .gitlab-ci.yml.
+#
+# Standalone (sans CI) :
+#   APP=sauvegarde-conformite podman compose -p "$APP" up -d
+
+name: ${APP}
+
+networks:
+  core-network:
+    external: true
+
+x-common-env: &common-env
+  VAULT_ADDR: http://vault.internal:8200
+  VAULT_TOKEN: root-dev-token
+  VAULT_PATH: secret/${APP}
+
+  REDIS_URL: redis://redis.internal:6379
+
+  DB_HOST: postgres.internal
+  DB_PORT: "5432"
+  DB_NAME: ${APP}
+
+  S3_ENDPOINT: http://host.containers.internal:9000
+  S3_BUCKET: ${APP}
+  S3_REGION: us-east-1
+
+services:
+
+  frontend:
+    image: localhost:5000/${APP}/frontend:dev
+    container_name: ${APP}-frontend
+    restart: unless-stopped
+    networks: [core-network]
+    ports:
+      - "8080:80"
+
+  api:
+    image: localhost:5000/${APP}/api:dev
+    container_name: ${APP}-api
+    restart: unless-stopped
+    networks: [core-network]
+    environment: *common-env
+    ports:
+      - "8081:8081"
